@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+
+import os
+import boto3
+from datetime import datetime, timedelta
+from configparser import ConfigParser
+import sys
+
+AWS_PROFILE = '166629205485_CostExplorerView'
+
+# Define a constant dictionary with human-readable keys and account IDs
+ACCOUNT_DATA = {
+    'prod-saas': {
+        'id': "929525451398"
+    },
+    'prod-saas-customers': {
+        'id': "978283744562"
+    },
+    'prod-saas-offline-backups': {
+        'id': "013892436430"
+    }
+}
+
+# Function to fetch AWS credentials from environment variables or AWS CLI configuration
+def get_aws_credentials():
+    aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
+    aws_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+    aws_session_token = os.getenv("AWS_SESSION_TOKEN")
+    aws_region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+
+    if not aws_access_key or not aws_secret_key:
+        credentials_path = os.path.expanduser("~/.aws/credentials")
+        if os.path.exists(credentials_path):
+            config = ConfigParser()
+            config.read(credentials_path)
+            aws_access_key = config.get(AWS_PROFILE, "aws_access_key_id", fallback=None)
+            aws_secret_key = config.get(AWS_PROFILE, "aws_secret_access_key", fallback=None)
+            aws_session_token = config.get(AWS_PROFILE, "aws_session_token", fallback=None)
+            aws_region = config.get(AWS_PROFILE, "region", fallback=aws_region)
+
+    if not aws_access_key or not aws_secret_key:
+        raise EnvironmentError("AWS credentials not set in environment variables or ~/.aws/credentials file.")
+
+    return aws_access_key, aws_secret_key, aws_session_token, aws_region
+
+# Function to retrieve monthly cost from AWS for a specific account ID and optional tag
+def get_monthly_cost(month, account_key, account_id, tag_key=None, tag_value=None):
+    aws_access_key, aws_secret_key, aws_session_token, aws_region = get_aws_credentials()
+    
+    client = boto3.client(
+        'ce',
+        aws_access_key_id=aws_access_key,
+        aws_secret_access_key=aws_secret_key,
+        aws_session_token=aws_session_token,
+        region_name=aws_region
+    )
+
+    start_date = f"{month}-01"
+    end_date = (datetime.strptime(start_date, "%Y-%m-%d").replace(day=28) + timedelta(days=4)).strftime("%Y-%m-01")
+    
+    filter_params = {
+        'And': [
+            {'Dimensions': {'Key': 'LINKED_ACCOUNT', 'Values': [account_id]}},
+            {'Dimensions': {'Key': 'RECORD_TYPE', 'Values': ['USAGE']}}
+        ]
+    }
+    response = client.get_cost_and_usage(
+        TimePeriod={
+            'Start': start_date,
+            'End': end_date
+        },
+        Granularity='MONTHLY',
+        Metrics=['UnblendedCost'],
+        Filter=filter_params
+    )
+
+    cost = sum(float(result['Total']['UnblendedCost']['Amount']) for result in response.get('ResultsByTime', []))
+    
+    print(f"Total AWS cost for Month: {month}, Account: {account_key} ({account_id}): ${cost:,.2f}")
+
+
+if __name__ == "__main__":
+
+    month = sys.argv[1] if len(sys.argv) == 2 else datetime.now().strftime("%Y-%m")
+
+    for key in ACCOUNT_DATA:
+        get_monthly_cost(month, key, ACCOUNT_DATA[key]['id'])
