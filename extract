@@ -58,12 +58,11 @@ def get_monthly_cost(month, account_key, account_id, tag_key=None, tag_value=Non
     start_date = f"{month}-01"
     end_date = (datetime.strptime(start_date, "%Y-%m-%d").replace(day=28) + timedelta(days=4)).strftime("%Y-%m-01")
     
+    # Removed RECORD_TYPE filter and included GroupBy
     filter_params = {
-        'And': [
-            {'Dimensions': {'Key': 'LINKED_ACCOUNT', 'Values': [account_id]}},
-            {'Dimensions': {'Key': 'RECORD_TYPE', 'Values': ['USAGE']}}
-        ]
+        'Dimensions': {'Key': 'LINKED_ACCOUNT', 'Values': [account_id]}
     }
+
     response = client.get_cost_and_usage(
         TimePeriod={
             'Start': start_date,
@@ -71,13 +70,25 @@ def get_monthly_cost(month, account_key, account_id, tag_key=None, tag_value=Non
         },
         Granularity='MONTHLY',
         Metrics=['UnblendedCost'],
-        Filter=filter_params
+        Filter=filter_params,
+        GroupBy=[
+            {
+                'Type': 'DIMENSION',
+                'Key': 'RECORD_TYPE'
+            }
+        ]
     )
 
-    cost = sum(float(result['Total']['UnblendedCost']['Amount']) for result in response.get('ResultsByTime', []))
-    
-    print(f"Total AWS cost for Month: {month}, Account: {account_key} ({account_id}): ${cost:,.2f}")
-
+    results_by_record_type = response.get('ResultsByTime', [])
+    for result in results_by_record_type:
+        time_period = result['TimePeriod']
+        groups = result.get('Groups', [])
+        
+        print(f"Account: {account_key} ({account_id}), Time Period: {time_period['Start']} to {time_period['End']}")
+        for group in groups:
+            record_type = group['Keys'][0]
+            cost = float(group['Metrics']['UnblendedCost']['Amount'])
+            print(f"  RECORD_TYPE: {record_type}, Cost: ${cost:,.2f}")
 
 if __name__ == "__main__":
 
