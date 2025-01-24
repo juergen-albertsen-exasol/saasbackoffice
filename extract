@@ -7,18 +7,19 @@ from configparser import ConfigParser
 import sys
 
 AWS_PROFILE = '166629205485_CostExplorerView'
+CUSTOMER_TAG_KEY = "saas:AccountUUID"
 
 # Define a constant dictionary with human-readable keys and account IDs
 ACCOUNT_DATA = {
-    'prod-saas': {
-        'id': "929525451398"
-    },
+    'prod-saas': {'id': '929525451398'},
     'prod-saas-customers': {
-        'id': "978283744562"
+        'id': "978283744562",
+        'customers': {
+            'Adena/Monsoon': 'bXrhk6dXQCiZbzYNNVxjuw',
+            'Vocare': 'MS2X5aDrRm-yaHgnZs7g3A'
+        }
     },
-    'prod-saas-offline-backups': {
-        'id': "013892436430"
-    }
+    'prod-saas-offline-backups': {'id': "013892436430"}
 }
 
 # Function to fetch AWS credentials from environment variables or AWS CLI configuration
@@ -44,7 +45,9 @@ def get_aws_credentials():
     return aws_access_key, aws_secret_key, aws_session_token, aws_region
 
 # Function to retrieve monthly cost from AWS for a specific account ID and optional tag
-def get_monthly_cost(month, account_key, account_id, tag_key=None, tag_value=None):
+def get_monthly_cost(month, account_key):
+    account = ACCOUNT_DATA[account_key]
+    account_id = account["id"]
     aws_access_key, aws_secret_key, aws_session_token, aws_region = get_aws_credentials()
     
     client = boto3.client(
@@ -59,10 +62,33 @@ def get_monthly_cost(month, account_key, account_id, tag_key=None, tag_value=Non
     end_date = (datetime.strptime(start_date, "%Y-%m-%d").replace(day=28) + timedelta(days=4)).strftime("%Y-%m-01")
     
     # Removed RECORD_TYPE filter and included GroupBy
-    filter_params = {
+    account_filter_params = {
         'Dimensions': {'Key': 'LINKED_ACCOUNT', 'Values': [account_id]}
     }
 
+    print_costs(client, account_key, account_id, start_date, end_date, account_filter_params)
+    
+    customers = account.get("customers", None)
+    if customers:
+        for customer_name, customer_id in customers.items():
+            customer_filter_params = {
+                "And": [
+                    account_filter_params,
+                    {
+                        "Tags": {
+                            "Key": CUSTOMER_TAG_KEY,
+                            "Values": [customer_id]
+                        }
+                    }
+                ]
+            }
+            print_costs(client, account_key, account_id, start_date, end_date, 
+                        account_filter_params, customer_name, customer_id)
+    
+         
+
+def print_costs(client, account_key, account_id, start_date, end_date, filter_params, 
+                customer_name=None, customer_id = None):
     response = client.get_cost_and_usage(
         TimePeriod={
             'Start': start_date,
@@ -84,7 +110,11 @@ def get_monthly_cost(month, account_key, account_id, tag_key=None, tag_value=Non
         time_period = result['TimePeriod']
         groups = result.get('Groups', [])
         
-        print(f"Account: {account_key} ({account_id}), Time Period: {time_period['Start']} to {time_period['End']}")
+        message = f"Account: {account_key} ({account_id}), "
+        if customer_name:
+            message += f"Customer: {customer_name}, ({customer_id}), "
+        message += f"Time Period: {time_period['Start']} to {time_period['End']}"
+        print(message)
         for group in groups:
             record_type = group['Keys'][0]
             cost = float(group['Metrics']['UnblendedCost']['Amount'])
@@ -95,4 +125,4 @@ if __name__ == "__main__":
     month = sys.argv[1] if len(sys.argv) == 2 else datetime.now().strftime("%Y-%m")
 
     for key in ACCOUNT_DATA:
-        get_monthly_cost(month, key, ACCOUNT_DATA[key]['id'])
+        get_monthly_cost(month, key)
