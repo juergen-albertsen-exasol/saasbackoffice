@@ -10,16 +10,28 @@ AWS_PROFILE = '166629205485_CostExplorerView'
 CUSTOMER_TAG_KEY = "saas:AccountUUID"
 
 # Define a constant dictionary with human-readable keys and account IDs
+CUSTOMERS_UUIDS = {
+    'Adena/Monsoon': 'bXrhk6dXQCiZbzYNNVxjuw',
+    'Vocare': 'MS2X5aDrRm-yaHgnZs7g3A',
+    'Semikron': 'jntuvw96QqeVGdhjx1dmzg',
+    'Wooga': 'acc_PcIfJ9h7TymMw5nApnglYg',
+    'Formue': 'acc_8xdvgfppTBKCiQvUgCoLyA',
+    'VENI Energy': 'acc_JLkQkqwHTuaFW9sqf-r-xQ',
+    'Quadient': 'acc_gVe9NjHiQiul5D0kJuOdhg',
+    'Blue Yonder': 'acc_vXK19HzPQsaOP03cQ-tDUw',
+    'Adidas': 'acc_wkWSBg08QHWWpIrTH1oiFw'
+}
+
 AWS_ACCOUNTS = {
     'prod-saas': {'id': '929525451398'},
     'prod-saas-customers': {
         'id': "978283744562",
-        'customers': {
-            'Adena/Monsoon': 'bXrhk6dXQCiZbzYNNVxjuw',
-            'Vocare': 'MS2X5aDrRm-yaHgnZs7g3A'
-        }
+        'customers': CUSTOMERS_UUIDS
     },
-    'prod-saas-offline-backups': {'id': "013892436430"}
+    'prod-saas-offline-backups': {
+        'id': "013892436430",
+        'customers': CUSTOMERS_UUIDS
+    }
 }
 
 # Function to fetch AWS credentials from environment variables or AWS CLI configuration
@@ -125,4 +137,5 @@ if __name__ == "__main__":
     month = sys.argv[1] if len(sys.argv) == 2 else datetime.now().strftime("%Y-%m")
 
     for key in AWS_ACCOUNTS:
+        print()
         get_monthly_cost(month, key)
