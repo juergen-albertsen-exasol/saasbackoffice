@@ -7,29 +7,35 @@ from configparser import ConfigParser
 import sys
 
 AWS_PROFILE = '166629205485_CostExplorerView'
-CUSTOMER_TAG_KEY = "saas:AccountUUID"
+ATTRIBUTION_TAG_KEY = "saas:AccountUUID"
 
-CUSTOMERS_UUIDS = {
-    'Adena/Monsoon': 'bXrhk6dXQCiZbzYNNVxjuw',
-    'Vocare': 'MS2X5aDrRm-yaHgnZs7g3A',
-    'Semikron': 'jntuvw96QqeVGdhjx1dmzg',
-    'Wooga': 'acc_PcIfJ9h7TymMw5nApnglYg',
-    'Formue': 'acc_8xdvgfppTBKCiQvUgCoLyA',
-    'VENI Energy': 'acc_JLkQkqwHTuaFW9sqf-r-xQ',
-    'Quadient': 'acc_gVe9NjHiQiul5D0kJuOdhg',
-    'Blue Yonder': 'acc_vXK19HzPQsaOP03cQ-tDUw',
-    'Adidas': 'acc_wkWSBg08QHWWpIrTH1oiFw'
+RESOURCE_ATTRIBUTIONS = {
+    'Customer: Adena/Monsoon': 'bXrhk6dXQCiZbzYNNVxjuw',
+    'Customer: Vocare': 'MS2X5aDrRm-yaHgnZs7g3A',
+    'Customer: Semikron': 'jntuvw96QqeVGdhjx1dmzg',
+    'Customer: Wooga': 'acc_PcIfJ9h7TymMw5nApnglYg',
+    'Customer: Formue': 'acc_8xdvgfppTBKCiQvUgCoLyA',
+    'Customer: VENI Energy': 'acc_JLkQkqwHTuaFW9sqf-r-xQ',
+    'Customer: Quadient': 'acc_gVe9NjHiQiul5D0kJuOdhg',
+    'Prospect: Blue Yonder': 'acc_vXK19HzPQsaOP03cQ-tDUw',
+    'Prospect: Adidas': 'acc_wkWSBg08QHWWpIrTH1oiFw',
+    'Internal: PM': 'Fy-L3gMWQEGXV5frZYnZRg',
+    'Internal: SE': 'W9qLtwBuSrmJprskJG6xbg',
+    'Internal: Engineering': 'N3iRsnKNSDCyqtN_hi426g',
+    'Internal: IPS': 'xgySkSh1QSqR99VkLZ3GUw',
+    'Internal: Analytics': 'acc_xxWSOUqwTeSp7eq1731WUw',
+    'Partner: Keboola': 'oAVqZoHnSRO5rAjahTgAkg',    
 }
 
 AWS_ACCOUNTS = {
     'prod-saas': {'id': '929525451398'},
     'prod-saas-customers': {
         'id': "978283744562",
-        'customers': CUSTOMERS_UUIDS
+        'attributions': RESOURCE_ATTRIBUTIONS
     },
     'prod-saas-offline-backups': {
         'id': "013892436430",
-        'customers': CUSTOMERS_UUIDS
+        'attributions': RESOURCE_ATTRIBUTIONS
     }
 }
 
@@ -73,25 +79,25 @@ def get_monthly_cost(start_date, end_date, account_key):
 
     print_costs(client, account_key, account_id, start_date, end_date, account_filter_params)
     
-    customers = account.get("customers", None)
-    if customers:
-        for customer_name, customer_id in customers.items():
+    attributions = account.get("attributions", None)
+    if attributions:
+        for attribution_key, attribution_id in attributions.items():
             customer_filter_params = {
                 "And": [
                     account_filter_params,
                     {
                         "Tags": {
-                            "Key": CUSTOMER_TAG_KEY,
-                            "Values": [customer_id]
+                            "Key": ATTRIBUTION_TAG_KEY,
+                            "Values": [attribution_id]
                         }
                     }
                 ]
             }
             print_costs(client, account_key, account_id, start_date, end_date, 
-                        customer_filter_params, customer_name, customer_id)
+                        customer_filter_params, attribution_key, attribution_id)
 
 def print_costs(client, account_key, account_id, start_date, end_date, filter_params, 
-                customer_name=None, customer_id=None):
+                attribution_key=None, attribution_id=None):
     response = client.get_cost_and_usage(
         TimePeriod={
             'Start': start_date,
@@ -114,8 +120,8 @@ def print_costs(client, account_key, account_id, start_date, end_date, filter_pa
         groups = result.get('Groups', [])
         
         message = f"Account: {account_key} ({account_id}), "
-        if customer_name:
-            message += f"Customer: {customer_name}, ({customer_id}), "
+        if attribution_key:
+            message += f"Attribution: {attribution_key}, ({attribution_id}), "
         message += f"Time Period: {time_period['Start']} to {time_period['End']}"
         print(message)
         for group in groups:
