@@ -36,7 +36,13 @@ AWS_ACCOUNTS = {
     'prod-saas-offline-backups': {
         'id': "013892436430",
         'attributions': RESOURCE_ATTRIBUTIONS
-    }
+    },
+    'dev-saas': {'id': '533884745449' },
+    'dev-saas-customers': {'id':  '228817139046' },
+    'dev-saas-offline-backups': {'id': '628242636532' },
+    'staging-saas': {'id': '946287329088' },
+    'staging-saas-customers': {'id':  '892065233093'},
+    'staging-saas-offline-backups': {'id': '074965225020' }
 }
 
 def get_aws_credentials():
