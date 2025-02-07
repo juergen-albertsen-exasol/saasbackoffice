@@ -105,19 +105,8 @@ def get_monthly_cost(start_date, end_date, account_key):
         
         # Prints costs for untagged or unknown attribution tags
         all_attribution_values = list(attributions.values())
-        unknown_tag_filter_params = {
-            "And": [
-                account_filter_params,
-                {
-                    "Tags": {
-                        "Key": ATTRIBUTION_TAG_KEY,
-                        "MatchOptions": ['ABSENT'],   # For resources without the tag
-                    }
-                }
-            ]
-        }
         
-        unknown_value_filter_params = {
+        unknown_attribution = {
             "And": [
                 account_filter_params,
                 {
@@ -130,9 +119,21 @@ def get_monthly_cost(start_date, end_date, account_key):
                 }
             ]
         }
+        print_costs(client, account_key, account_id, start_date, end_date, unknown_attribution, "Other Attribution", "None")
+        
+        no_attribution_filter_params = {
+            "And": [
+                account_filter_params,
+                {
+                    "Tags": {
+                        "Key": ATTRIBUTION_TAG_KEY,
+                        "MatchOptions": ['ABSENT'],   # For resources without the tag
+                    }
+                }
+            ]
+        }
+        print_costs(client, account_key, account_id, start_date, end_date, no_attribution_filter_params, "No Attribution", "None")
 
-        print_costs(client, account_key, account_id, start_date, end_date, unknown_tag_filter_params, "Unknown/No Attribution", "None")
-        print_costs(client, account_key, account_id, start_date, end_date, unknown_value_filter_params, "Unknown Attribution Value", "None")
 
 def print_costs(client, account_key, account_id, start_date, end_date, filter_params, 
                 attribution_key=None, attribution_id=None):
