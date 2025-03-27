@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+
+import os
+import boto3
+from datetime import datetime, timedelta
+from configparser import ConfigParser
+import sys
+
+AWS_PROFILE = '166629205485_CostExplorerView'
+ATTRIBUTION_TAG_KEY = "saas:AccountUUID"
+
+RESOURCE_ATTRIBUTIONS = {
+    'Customer: Adena/Monsoon': 'bXrhk6dXQCiZbzYNNVxjuw',
+    'Customer: Vocare': 'MS2X5aDrRm-yaHgnZs7g3A',
+    'Customer: Semikron': 'jntuvw96QqeVGdhjx1dmzg',
+    'Customer: Wooga': 'acc_PcIfJ9h7TymMw5nApnglYg',
+    'Customer: Formue': 'acc_8xdvgfppTBKCiQvUgCoLyA',
+    'Customer: VENI Energy': 'acc_JLkQkqwHTuaFW9sqf-r-xQ',
+    'Customer: Quadient': 'acc_gVe9NjHiQiul5D0kJuOdhg',
+    'Prospect: Blue Yonder': 'acc_vXK19HzPQsaOP03cQ-tDUw',
+    'Prospect: Adidas': 'acc_wkWSBg08QHWWpIrTH1oiFw',
+    'Internal: PM': 'Fy-L3gMWQEGXV5frZYnZRg',
+    'Internal: SE': 'W9qLtwBuSrmJprskJG6xbg',
+    'Internal: Engineering': 'N3iRsnKNSDCyqtN_hi426g',
+    'Internal: IPS': 'xgySkSh1QSqR99VkLZ3GUw',
+    'Internal: Analytics': 'acc_xxWSOUqwTeSp7eq1731WUw',
+    'Partner: Keboola': 'oAVqZoHnSRO5rAjahTgAkg',    
+}
+
+AWS_ACCOUNTS = {
+    'prod-saas': {'id': '929525451398'},
+    'prod-saas-customers': {
+        'id': "978283744562",
+        'attributions': RESOURCE_ATTRIBUTIONS
+    },
+    'prod-saas-offline-backups': {
+        'id': "013892436430",
+        'attributions': RESOURCE_ATTRIBUTIONS
+    },
+    'dev-saas': {'id': '533884745449' },
+    'dev-saas-customers': {'id':  '228817139046' },
+    'dev-saas-offline-backups': {'id': '628242636532' },
+    'staging-saas': {'id': '946287329088' },
+    'staging-saas-customers': {'id':  '892065233093'},
+    'staging-saas-offline-backups': {'id': '074965225020' }
+}
+
+def get_aws_credentials():
+    aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
+    aws_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+    aws_session_token = os.getenv("AWS_SESSION_TOKEN")
+    aws_region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+
+    if not aws_access_key or not aws_secret_key:
+        credentials_path = os.path.expanduser("~/.aws/credentials")
+        if os.path.exists(credentials_path):
+            config = ConfigParser()
+            config.read(credentials_path)
+            aws_access_key = config.get(AWS_PROFILE, "aws_access_key_id", fallback=None)
+            aws_secret_key = config.get(AWS_PROFILE, "aws_secret_access_key", fallback=None)
+            aws_session_token = config.get(AWS_PROFILE, "aws_session_token", fallback=None)
+            aws_region = config.get(AWS_PROFILE, "region", fallback=aws_region)
+
+    if not aws_access_key or not aws_secret_key:
+        raise EnvironmentError("AWS credentials not set in environment variables or ~/.aws/credentials file.")
+
+    return aws_access_key, aws_secret_key, aws_session_token, aws_region
+
+def get_monthly_cost(start_date, end_date, account_key):
+    account = AWS_ACCOUNTS[account_key]
+    account_id = account["id"]
+    aws_access_key, aws_secret_key, aws_session_token, aws_region = get_aws_credentials()
+    
+    client = boto3.client(
+        'ce',
+        aws_access_key_id=aws_access_key,
+        aws_secret_access_key=aws_secret_key,
+        aws_session_token=aws_session_token,
+        region_name=aws_region
+    )
+    
+    account_filter_params = {
+        'Dimensions': {'Key': 'LINKED_ACCOUNT', 'Values': [account_id]}
+    }
+
+    print_costs(client, account_key, account_id, start_date, end_date, account_filter_params)
+    
+    attributions = account.get("attributions", None)
+    if attributions:
+        # Prints costs for known attribution tags
+        for attribution_key, attribution_id in attributions.items():
+            customer_filter_params = {
+                "And": [
+                    account_filter_params,
+                    {
+                        "Tags": {
+                            "Key": ATTRIBUTION_TAG_KEY,
+                            "Values": [attribution_id]
+                        }
+                    }
+                ]
+            }
+            print_costs(client, account_key, account_id, start_date, end_date, 
+                        customer_filter_params, attribution_key, attribution_id)
+        
+        # Prints costs for untagged or unknown attribution tags
+        all_attribution_values = list(attributions.values())
+        
+        unknown_attribution = {
+            "And": [
+                account_filter_params,
+                {
+                    "Not": {
+                        "Tags": {
+                            "Key": ATTRIBUTION_TAG_KEY,
+                            "Values": all_attribution_values
+                        }
+                    }
+                }
+            ]
+        }
+        print_costs(client, account_key, account_id, start_date, end_date, unknown_attribution, "Other Attribution", "None")
+        
+        no_attribution_filter_params = {
+            "And": [
+                account_filter_params,
+                {
+                    "Tags": {
+                        "Key": ATTRIBUTION_TAG_KEY,
+                        "MatchOptions": ['ABSENT'],   # For resources without the tag
+                    }
+                }
+            ]
+        }
+        print_costs(client, account_key, account_id, start_date, end_date, no_attribution_filter_params, "No Attribution", "None")
+
+
+def print_costs(client, account_key, account_id, start_date, end_date, filter_params, 
+                attribution_key=None, attribution_id=None):
+    response = client.get_cost_and_usage(
+        TimePeriod={
+            'Start': start_date,
+            'End': end_date
+        },
+        Granularity='MONTHLY',
+        Metrics=['UnblendedCost'],
+        Filter=filter_params,
+        GroupBy=[
+            {
+                'Type': 'DIMENSION',
+                'Key': 'RECORD_TYPE'
+            }
+        ]
+    )
+
+    results_by_record_type = response.get('ResultsByTime', [])
+    for result in results_by_record_type:
+        time_period = result['TimePeriod']
+        groups = result.get('Groups', [])
+        
+        message = f"Account: {account_key} ({account_id}), "
+        if attribution_key:
+            message += f"Attribution: {attribution_key}, ({attribution_id}), "
+        message += f"Time Period: {time_period['Start']} to {time_period['End']}"
+        print(message)
+        for group in groups:
+            record_type = group['Keys'][0]
+            cost = float(group['Metrics']['UnblendedCost']['Amount'])
+            print(f"  RECORD_TYPE: {record_type}, Cost: ${cost:,.2f}")
+
+if __name__ == "__main__":
+    # Calculate the start and end date based on the provided month from arguments.
+    if len(sys.argv) == 2:
+        try:
+            month = sys.argv[1]
+            start_date = f"{month}-01"
+            end_date = (datetime.strptime(start_date, "%Y-%m-%d").replace(day=28) + timedelta(days=4)).strftime("%Y-%m-01")
+        except ValueError:
+            print("Invalid date format. Please use YYYY-MM.")
+            sys.exit(1)
+    else:
+        current_date = datetime.now()
+        start_date = current_date.replace(day=1).strftime("%Y-%m-%d")
+        end_date = (current_date.replace(day=28) + timedelta(days=4)).strftime("%Y-%m-01")
+
+    for key in AWS_ACCOUNTS:
+        print()
+        get_monthly_cost(start_date, end_date, key)
