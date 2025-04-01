@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+
+import pyexasol
+import boto3
+from datetime import datetime, timedelta
+from configparser import ConfigParser
+import os
+import sys
+
+class Cost:
+    def __init__(self, account_uuid, start_date, end_date, cost):
+        self.account_uuid = account_uuid
+        self.start_date = start_date
+        self.end_date = end_date
+        self.cost = cost
+
+    def __repr__(self):
+        return f"Cost(account_uuid={self.account_uuid}, start_date={self.start_date}, end_date={self.end_date}, cost={self.cost})"
+
+config = ConfigParser()
+config.read(os.path.join(os.path.dirname(__file__), '.exasolrc'))
+
+DB_DSN = config.get('connection', 'dsn')
+DB_USER = config.get('connection', 'user')
+DB_PASSWORD = config.get('connection', 'password')
+DB_SCHEMA = config.get('connection', 'schema')
+
+
+AWS_PROFILE = "166629205485_CostExplorerView"
+ATTRIBUTION_TAG_KEY = "saas:AccountUUID"
+
+AWS_ACCOUNTS = ["929525451398", "978283744562", "013892436430"]
+
+def with_connection(callback):
+    connection = None
+    try:
+        connection = pyexasol.connect(
+            dsn=DB_DSN, user=DB_USER, password=DB_PASSWORD, schema=DB_SCHEMA
+        )
+        return callback(connection)
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    finally:
+        if connection:
+            connection.close()
+
+def query(query):
+    def execute_query(connection):
+        result = connection.execute(query)
+        return [row for row in result]
+    return with_connection(execute_query)
+
+
+def get_aws_credentials():
+    aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
+    aws_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+    aws_session_token = os.getenv("AWS_SESSION_TOKEN")
+    aws_region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+
+    if not aws_access_key or not aws_secret_key:
+        credentials_path = os.path.expanduser("~/.aws/credentials")
+        if os.path.exists(credentials_path):
+            config = ConfigParser()
+            config.read(credentials_path)
+            aws_access_key = config.get(AWS_PROFILE, "aws_access_key_id", fallback=None)
+            aws_secret_key = config.get(
+                AWS_PROFILE, "aws_secret_access_key", fallback=None
+            )
+            aws_session_token = config.get(
+                AWS_PROFILE, "aws_session_token", fallback=None
+            )
+            aws_region = config.get(AWS_PROFILE, "region", fallback=aws_region)
+
+    if not aws_access_key or not aws_secret_key:
+        raise EnvironmentError(
+            "AWS credentials not set in environment variables or ~/.aws/credentials file."
+        )
+
+    return aws_access_key, aws_secret_key, aws_session_token, aws_region
+
+
+def get_monthly_cost(month, account_uuids):
+    start_date = f"{month}-01"
+    end_date = (
+        datetime.strptime(start_date, "%Y-%m-%d").replace(day=28) + timedelta(days=4)
+    ).strftime("%Y-%m-01")
+    aws_access_key, aws_secret_key, aws_session_token, aws_region = (
+        get_aws_credentials()
+    )
+
+    client = boto3.client(
+        "ce",
+        aws_access_key_id=aws_access_key,
+        aws_secret_access_key=aws_secret_key,
+        aws_session_token=aws_session_token,
+        region_name=aws_region,
+    )
+
+    response = client.get_cost_and_usage(
+        TimePeriod={"Start": start_date, "End": end_date},
+        Granularity="MONTHLY",
+        Metrics=["UnblendedCost"],
+        Filter={
+            "And": [
+                {"Dimensions": {"Key": "LINKED_ACCOUNT", "Values": AWS_ACCOUNTS}},
+                {"Tags": {"Key": ATTRIBUTION_TAG_KEY, "Values": account_uuids}},
+            ]
+        },
+        GroupBy=[{"Type": "TAG", "Key": ATTRIBUTION_TAG_KEY}],
+    )
+    results_by_time = response.get('ResultsByTime', [])
+    costs = []
+    for result in results_by_time:
+        groups = result.get('Groups', [])
+        for group in groups:
+            account_tag = group['Keys'][0]
+            account_uuid = account_tag.split("$")[1]
+            cost_amount = float(group['Metrics']['UnblendedCost']['Amount'])
+            cost = Cost(account_uuid, start_date, end_date, cost_amount)
+            costs.append(cost)            
+    return costs
+
+def chunk_list(lst, chunk_size):
+    for i in range(0, len(lst), chunk_size):
+        yield lst[i:i + chunk_size]
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python customeroverview.py <month>")
+        sys.exit(1)
+    month = sys.argv[1]  # Take the month from the command line argument
+    account_uuids = [a[0] for a in query("SELECT DISTINCT account_uuid FROM accounts")]
+    def insert_costs(con):
+        for batch in chunk_list(account_uuids, 100):
+            costs = get_monthly_cost(month, batch)
+            for cost in costs:
+                print(f"Inserting cost: {cost}")
+                con.execute(
+                    query = "INSERT INTO costs_per_account (account_uuid, start_date, end_date, cost) VALUES ({account_uuid}, {start_date}, {end_date}, {cost})",
+                    query_params = {
+                        "account_uuid": cost.account_uuid,
+                        "start_date": cost.start_date,
+                        "end_date": cost.end_date,
+                        "cost": cost.cost
+                    }
+                )
+    with_connection(insert_costs)
