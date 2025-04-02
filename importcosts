@@ -7,29 +7,32 @@ from configparser import ConfigParser
 import os
 import sys
 
+
 class Cost:
-    def __init__(self, account_uuid, start_date, end_date, cost):
+    def __init__(self, account_uuid, start_date, end_date, amount):
         self.account_uuid = account_uuid
         self.start_date = start_date
         self.end_date = end_date
-        self.cost = cost
+        self.amount = amount
 
     def __repr__(self):
-        return f"Cost(account_uuid={self.account_uuid}, start_date={self.start_date}, end_date={self.end_date}, cost={self.cost})"
+        return f"Cost(account_uuid={self.account_uuid}, start_date={self.start_date}, end_date={self.end_date}, amount={self.amount})"
+
 
 config = ConfigParser()
-config.read(os.path.join(os.path.dirname(__file__), '.exasolrc'))
+config.read(os.path.join(os.path.dirname(__file__), ".exasolrc"))
 
-DB_DSN = config.get('connection', 'dsn')
-DB_USER = config.get('connection', 'user')
-DB_PASSWORD = config.get('connection', 'password')
-DB_SCHEMA = config.get('connection', 'schema')
+DB_DSN = config.get("connection", "dsn")
+DB_USER = config.get("connection", "user")
+DB_PASSWORD = config.get("connection", "password")
+DB_SCHEMA = config.get("connection", "schema")
 
 
 AWS_PROFILE = "166629205485_CostExplorerView"
 ATTRIBUTION_TAG_KEY = "saas:AccountUUID"
 
 AWS_ACCOUNTS = ["929525451398", "978283744562", "013892436430"]
+
 
 def with_connection(callback):
     connection = None
@@ -44,10 +47,12 @@ def with_connection(callback):
         if connection:
             connection.close()
 
+
 def query(query):
     def execute_query(connection):
         result = connection.execute(query)
         return [row for row in result]
+
     return with_connection(execute_query)
 
 
@@ -79,7 +84,7 @@ def get_aws_credentials():
     return aws_access_key, aws_secret_key, aws_session_token, aws_region
 
 
-def get_monthly_cost(month, account_uuids):
+def get_monthly_cost(month, account_uuids=None):
     start_date = f"{month}-01"
     end_date = (
         datetime.strptime(start_date, "%Y-%m-%d").replace(day=28) + timedelta(days=4)
@@ -96,6 +101,11 @@ def get_monthly_cost(month, account_uuids):
         region_name=aws_region,
     )
 
+    if account_uuids is not None:
+        tag_filter = {"Tags": {"Key": ATTRIBUTION_TAG_KEY, "Values": account_uuids}}
+    else:
+        tag_filter = {"Tags": {"Key": ATTRIBUTION_TAG_KEY, "MatchOptions": ["ABSENT"]}}
+
     response = client.get_cost_and_usage(
         TimePeriod={"Start": start_date, "End": end_date},
         Granularity="MONTHLY",
@@ -103,26 +113,67 @@ def get_monthly_cost(month, account_uuids):
         Filter={
             "And": [
                 {"Dimensions": {"Key": "LINKED_ACCOUNT", "Values": AWS_ACCOUNTS}},
-                {"Tags": {"Key": ATTRIBUTION_TAG_KEY, "Values": account_uuids}},
+                tag_filter,
             ]
         },
         GroupBy=[{"Type": "TAG", "Key": ATTRIBUTION_TAG_KEY}],
     )
-    results_by_time = response.get('ResultsByTime', [])
+    results_by_time = response.get("ResultsByTime", [])
     costs = []
     for result in results_by_time:
-        groups = result.get('Groups', [])
+        groups = result.get("Groups", [])
         for group in groups:
-            account_tag = group['Keys'][0]
-            account_uuid = account_tag.split("$")[1]
-            cost_amount = float(group['Metrics']['UnblendedCost']['Amount'])
+            account_tag = group["Keys"][0]
+            if account_uuids is not None:
+                account_uuid = account_tag.split("$")[1]
+            else:
+                account_uuid = "UNATTRIBUTED"
+            cost_amount = float(group["Metrics"]["UnblendedCost"]["Amount"])
             cost = Cost(account_uuid, start_date, end_date, cost_amount)
-            costs.append(cost)            
+            costs.append(cost)
     return costs
+
 
 def chunk_list(lst, chunk_size):
     for i in range(0, len(lst), chunk_size):
-        yield lst[i:i + chunk_size]
+        yield lst[i : i + chunk_size]
+
+
+def with_connection(callback):
+    connection = None
+    try:
+        connection = pyexasol.connect(
+            dsn=DB_DSN, user=DB_USER, password=DB_PASSWORD, schema=DB_SCHEMA
+        )
+        return callback(connection)
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    finally:
+        if connection:
+            connection.close()
+
+
+def insert_costs(con, costs):
+    for cost in costs:
+        print(f"Inserting cost: {cost}")
+        try:
+            con.execute(
+                query="INSERT INTO costs_per_account (account_uuid, start_date, end_date, amount) VALUES ({account_uuid}, {start_date}, {end_date}, {amount})",
+                query_params={
+                    "account_uuid": cost.account_uuid,
+                    "start_date": cost.start_date,
+                    "end_date": cost.end_date,
+                    "amount": cost.amount,
+                },
+            )
+        except Exception as e:
+            if e.code == "27002":
+                print(
+                    f"Duplicate entry for {cost.account_uuid} in {cost.start_date} - {cost.end_date}, skipping."
+                )
+            else:
+                raise e
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -130,18 +181,14 @@ if __name__ == "__main__":
         sys.exit(1)
     month = sys.argv[1]  # Take the month from the command line argument
     account_uuids = [a[0] for a in query("SELECT DISTINCT account_uuid FROM accounts")]
-    def insert_costs(con):
+
+    def export_costs(con):
+        print("Getting costs for accounts")
         for batch in chunk_list(account_uuids, 100):
             costs = get_monthly_cost(month, batch)
-            for cost in costs:
-                print(f"Inserting cost: {cost}")
-                con.execute(
-                    query = "INSERT INTO costs_per_account (account_uuid, start_date, end_date, cost) VALUES ({account_uuid}, {start_date}, {end_date}, {cost})",
-                    query_params = {
-                        "account_uuid": cost.account_uuid,
-                        "start_date": cost.start_date,
-                        "end_date": cost.end_date,
-                        "cost": cost.cost
-                    }
-                )
-    with_connection(insert_costs)
+            insert_costs(con, costs)
+        print("Getting unattributed costs")
+        costs = get_monthly_cost(month, None)
+        insert_costs(con, costs)
+
+    with_connection(export_costs)
