@@ -44,8 +44,8 @@ def query(query):
 
 
 def convert_row_to_dict(row):
-    dict = {"account_uuid": row[0], "company": row[1], "amount": float(row[2])}
-    comnpany = dict["company"]
+    dict = {"account_uuid": row[0], "amount": float(row[2])}
+    comnpany = row[1]
     if comnpany:
         dict["account"] = comnpany
     else:
