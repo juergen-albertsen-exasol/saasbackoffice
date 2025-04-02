@@ -6,7 +6,11 @@ import matplotlib.pyplot as plt
 import pyexasol
 import os
 from configparser import ConfigParser
+from datetime import datetime, timedelta
 
+
+# Set the page layout to wide
+st.set_page_config(layout="wide")
 
 config = ConfigParser()
 config.read(os.path.join(os.path.dirname(__file__), ".exasolrc"))
@@ -39,39 +43,81 @@ def query(query):
     return with_connection(execute_query)
 
 
+def convert_row_to_dict(row):
+    dict = {"account_uuid": row[0], "company": row[1], "amount": float(row[2])}
+    comnpany = dict["company"]
+    if comnpany:
+        dict["account"] = comnpany
+    else:
+        dict["account"] = dict["account_uuid"]
+    return dict
+
+
+# Helper function to get the last 12 months
+def get_last_12_months():
+    today = datetime.today()
+    first_of_this_month = today.replace(day=1)
+    months = [
+        (first_of_this_month - timedelta(days=30 * i)).strftime("%Y-%m")
+        for i in range(12)
+    ]
+    return months[::-1]  # Reverse to show oldest first
+
+
+# Get the last 12 months and set the default to the last full month
+last_12_months = get_last_12_months()
+default_month = last_12_months[-2]  # Second-to-last month (last full month)
+
+# Add a select box for the month
+selected_month = st.selectbox("Select Month", last_12_months, index=len(last_12_months) - 2)
+
+# Calculate start_date and end_date based on the selected month
+start_date = f"{selected_month}-01"
+end_date = (
+    datetime.strptime(start_date, "%Y-%m-%d").replace(day=28) + timedelta(days=4)
+).strftime("%Y-%m-01")
+
+# Query the database
 result = query(
-    """
-    select distinct a.account_uuid, a.company, amount from costs_per_account c, accounts a
-    where c.account_uuid = a.account_uuid OR c.account_uuid = "UNATTRIBUTED
-    and start_date = '2025-03-01' and end_date <= '2025-04-01'
+    f"""
+    SELECT DISTINCT c.account_uuid, a.company, c.amount 
+    FROM costs_per_account c
+    LEFT JOIN accounts a
+    ON c.account_uuid = a.account_uuid
+    WHERE start_date = '{start_date}' AND end_date <= '{end_date}'
+    ORDER BY c.amount DESC
     """
 )
-data = [{"account_uuid": row[0], "company": row[1], "amount": float(row[2])} for row in result]
-print(type(data[0]["amount"]))
+data = [convert_row_to_dict(row) for row in result]
+if not data:
+    st.write("No Data for This Period.")
+    st.stop() 
+
 
 # Convert data to a DataFrame
 df = pd.DataFrame(data)
 
 # Streamlit app
-st.title("AWS Costs Dashboard")
+st.title(f"AWS Costs Dashboard: {selected_month}")
 
 # Sorting options
-sort_by = st.radio("Sort by:", ["Company Name", "Amount"])
+sort_by = st.radio("Sort by:", ["Amount", "Account"])
 
 # Sort the DataFrame
-if sort_by == "Company Name":
-    df = df.sort_values("company")
+if sort_by == "Account":
+    df = df.sort_values("account")
 else:
-    df = df.sort_values("amount", ascending=True)
+    df = df.sort_values("amount", ascending=False)
 
 # Display the sorted data
 st.write("### Sorted Data")
-st.dataframe(df)
+st.dataframe(df, use_container_width=True)  # Use full width for the table
 
 # Create a horizontal bar graph
 fig, ax = plt.subplots(figsize=(15, 30))
-ax.barh(df["company"], df["amount"], color="skyblue")
+ax.barh(df["account"], df["amount"], color="skyblue")
 ax.set_xlabel("Amount")
 ax.set_ylabel("Account")
-ax.set_title("AWS Costs by Account")
+ax.set_title(f"AWS Costs by Account for {selected_month}")
+ax.invert_yaxis()
 st.pyplot(fig)
