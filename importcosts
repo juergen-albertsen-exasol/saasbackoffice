@@ -217,13 +217,13 @@ if __name__ == "__main__":
     account_uuids = [a[0] for a in query("SELECT DISTINCT account_uuid FROM accounts")]
 
     def export_costs(con):
-        # print("Getting customer costs")
-        # for batch in chunk_list(account_uuids, 100):
-        #     costs = get_monthly_cost_per_tag(month, AWS_CUSTOMER_ACCOUNTS, batch)
-        #     insert_costs(con, costs)
-        # print("Getting unattributed customer costs")
-        # costs = get_monthly_cost_per_tag(month, AWS_CUSTOMER_ACCOUNTS, None)
-        # insert_costs(con, costs)
+        print("Getting customer costs")
+        for batch in chunk_list(account_uuids, 100):
+            costs = get_monthly_cost_per_tag(month, AWS_CUSTOMER_ACCOUNTS, batch)
+            insert_costs(con, costs)
+        print("Getting unattributed customer costs")
+        costs = get_monthly_cost_per_tag(month, AWS_CUSTOMER_ACCOUNTS, None)
+        insert_costs(con, costs)
         print("Getting control plane costs")
         costs = get_monthly_total_cost(month, AWS_CONTROL_PLANE_ACCOUNTS, "CONTROL PLANE")
         print(costs)
