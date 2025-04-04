@@ -25,7 +25,10 @@ def with_connection(callback):
     connection = None
     try:
         connection = pyexasol.connect(
-            dsn=DB_DSN, user=DB_USER, password=DB_PASSWORD, schema=DB_SCHEMA
+            dsn=DB_DSN, 
+            user=DB_USER, 
+            password=DB_PASSWORD, 
+            schema=DB_SCHEMA
         )
         return callback(connection)
     except Exception as e:
