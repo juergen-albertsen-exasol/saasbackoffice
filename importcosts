@@ -30,11 +30,8 @@ DB_SCHEMA = config.get("connection", "schema")
 
 AWS_PROFILE = "166629205485_CostExplorerView"
 ATTRIBUTION_TAG_KEY = "saas:AccountUUID"
-
-# prod-saas
-AWS_CONTROL_PLANE_ACCOUNTS = ["929525451398"]
-# prod-sass-customers, prod-saas-offline-backups
-AWS_CUSTOMER_ACCOUNTS = ["978283744562", "013892436430"]
+AWS_CONTROL_PLANE_ACCOUNTS = [config.get("aws_accounts", "control_plane")]
+AWS_CUSTOMER_ACCOUNTS = config.get("aws_accounts", "customer_accounts").split(",")
 
 
 def with_connection(callback):
