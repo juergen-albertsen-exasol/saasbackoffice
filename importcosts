@@ -87,40 +87,51 @@ def get_aws_credentials():
     return aws_access_key, aws_secret_key, aws_session_token, aws_region
 
 
-def get_monthly_cost_per_tag(month, linked_accounts, account_uuids=None):
-    start_date = f"{month}-01"
-    end_date = (
-        datetime.strptime(start_date, "%Y-%m-%d").replace(day=28) + timedelta(days=4)
-    ).strftime("%Y-%m-01")
-    aws_access_key, aws_secret_key, aws_session_token, aws_region = (
-        get_aws_credentials()
+def get_cost_and_usage(
+    client, start_date, end_date, granularity, metrics, filters, group_by=None
+):
+    """
+    Helper function to query AWS Cost Explorer and return results.
+    """
+    response = client.get_cost_and_usage(
+        TimePeriod={"Start": start_date, "End": end_date},
+        Granularity=granularity,
+        Metrics=metrics,
+        Filter=filters,
+        GroupBy=group_by or [],
     )
+    return response.get("ResultsByTime", [])
 
-    client = boto3.client(
-        "ce",
-        aws_access_key_id=aws_access_key,
-        aws_secret_access_key=aws_secret_key,
-        aws_session_token=aws_session_token,
-        region_name=aws_region,
-    )
+
+def get_monthly_cost_per_tag(client, month, linked_accounts, account_uuids=None):
+    """
+    Get monthly costs for resources with or without a specific tag.
+    """
+    start_date, end_date = get_start_and_end_date(month)
 
     if account_uuids is not None:
         tag_filter = {"Tags": {"Key": ATTRIBUTION_TAG_KEY, "Values": account_uuids}}
     else:
         tag_filter = {"Tags": {"Key": ATTRIBUTION_TAG_KEY, "MatchOptions": ["ABSENT"]}}
 
-    response = client.get_cost_and_usage(
-        TimePeriod={"Start": start_date, "End": end_date},
-        Granularity="MONTHLY",
-        Metrics=["UnblendedCost"],
-        Filter={
-            "And": [
-                {"Dimensions": {"Key": "LINKED_ACCOUNT", "Values": linked_accounts}},
-                tag_filter,
-            ]
-        }
+    filters = {
+        "And": [
+            {"Dimensions": {"Key": "LINKED_ACCOUNT", "Values": linked_accounts}},
+            {"Dimensions": {"Key": "RECORD_TYPE", "Values": ["Usage"]}},
+            tag_filter,
+        ]
+    }
+
+    results_by_time = get_cost_and_usage(
+        client,
+        start_date,
+        end_date,
+        granularity="MONTHLY",
+        metrics=["UnblendedCost"],
+        filters=filters,
+        group_by=[{"Type": "TAG", "Key": ATTRIBUTION_TAG_KEY}],
     )
-    results_by_time = response.get("ResultsByTime", [])
+
     costs = []
     for result in results_by_time:
         groups = result.get("Groups", [])
@@ -135,34 +146,41 @@ def get_monthly_cost_per_tag(month, linked_accounts, account_uuids=None):
             costs.append(cost)
     return costs
 
-def get_monthly_total_cost(month, linked_accounts, account_name):
+
+def get_start_and_end_date(month):
     start_date = f"{month}-01"
     end_date = (
         datetime.strptime(start_date, "%Y-%m-%d").replace(day=28) + timedelta(days=4)
     ).strftime("%Y-%m-01")
-    aws_access_key, aws_secret_key, aws_session_token, aws_region = (
-        get_aws_credentials()
-    )
 
-    client = boto3.client(
-        "ce",
-        aws_access_key_id=aws_access_key,
-        aws_secret_access_key=aws_secret_key,
-        aws_session_token=aws_session_token,
-        region_name=aws_region,
-    )
+    return start_date, end_date
 
 
-    response = client.get_cost_and_usage(
-        TimePeriod={"Start": start_date, "End": end_date},
-        Granularity="MONTHLY",
-        Metrics=["UnblendedCost"],
-        Filter={"Dimensions": {"Key": "LINKED_ACCOUNT", "Values": linked_accounts}},
+def get_monthly_total_cost(client, month, linked_accounts, account_name):
+    """
+    Get monthly total costs for linked accounts.
+    """
+    start_date, end_date = get_start_and_end_date(month)
+
+    filters = {
+        "And": [
+            {"Dimensions": {"Key": "LINKED_ACCOUNT", "Values": linked_accounts}},
+            {"Dimensions": {"Key": "RECORD_TYPE", "Values": ["Usage"]}},
+        ]
+    }
+
+    results_by_time = get_cost_and_usage(
+        client,
+        start_date,
+        end_date,
+        granularity="MONTHLY",
+        metrics=["UnblendedCost"],
+        filters=filters,
     )
-    results_by_time = response.get("ResultsByTime", [])
+
     costs = []
     for result in results_by_time:
-        cost_amount = result["Total"]["UnblendedCost"]["Amount"]
+        cost_amount = float(result["Total"]["UnblendedCost"]["Amount"])
         cost = Cost(account_name, start_date, end_date, cost_amount)
         costs.append(cost)
     return costs
@@ -171,20 +189,6 @@ def get_monthly_total_cost(month, linked_accounts, account_name):
 def chunk_list(lst, chunk_size):
     for i in range(0, len(lst), chunk_size):
         yield lst[i : i + chunk_size]
-
-
-def with_connection(callback):
-    connection = None
-    try:
-        connection = pyexasol.connect(
-            dsn=DB_DSN, user=DB_USER, password=DB_PASSWORD, schema=DB_SCHEMA
-        )
-        return callback(connection)
-    except Exception as e:
-        print(f"An error occurred: {e}")
-    finally:
-        if connection:
-            connection.close()
 
 
 def insert_costs(con, costs):
@@ -217,15 +221,31 @@ if __name__ == "__main__":
     account_uuids = [a[0] for a in query("SELECT DISTINCT account_uuid FROM accounts")]
 
     def export_costs(con):
+        aws_access_key, aws_secret_key, aws_session_token, aws_region = (
+            get_aws_credentials()
+        )
+        client = boto3.client(
+            "ce",
+            aws_access_key_id=aws_access_key,
+            aws_secret_access_key=aws_secret_key,
+            aws_session_token=aws_session_token,
+            region_name=aws_region,
+        )
+
         print("Getting customer costs")
         for batch in chunk_list(account_uuids, 100):
-            costs = get_monthly_cost_per_tag(month, AWS_CUSTOMER_ACCOUNTS, batch)
+            costs = get_monthly_cost_per_tag(
+                client, month, AWS_CUSTOMER_ACCOUNTS, batch
+            )
             insert_costs(con, costs)
         print("Getting unattributed customer costs")
-        costs = get_monthly_cost_per_tag(month, AWS_CUSTOMER_ACCOUNTS, None)
+        costs = get_monthly_cost_per_tag(client, month, AWS_CUSTOMER_ACCOUNTS, None)
         insert_costs(con, costs)
         print("Getting control plane costs")
-        costs = get_monthly_total_cost(month, AWS_CONTROL_PLANE_ACCOUNTS, "CONTROL PLANE")
+        costs = get_monthly_total_cost(
+            client, month, AWS_CONTROL_PLANE_ACCOUNTS, "CONTROL PLANE"
+        )
         print(costs)
         insert_costs(con, costs)
+
     with_connection(export_costs)
