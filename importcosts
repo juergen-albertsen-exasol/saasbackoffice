@@ -191,23 +191,24 @@ def chunk_list(lst, chunk_size):
 def insert_costs(con, costs):
     for cost in costs:
         print(f"Inserting cost: {cost}")
-        try:
-            con.execute(
-                query="INSERT INTO costs_per_account (account_uuid, start_date, end_date, amount) VALUES ({account_uuid}, {start_date}, {end_date}, {amount})",
-                query_params={
-                    "account_uuid": cost.account_uuid,
-                    "start_date": cost.start_date,
-                    "end_date": cost.end_date,
-                    "amount": cost.amount,
-                },
-            )
-        except Exception as e:
-            if e.code == "27002":
-                print(
-                    f"Duplicate entry for {cost.account_uuid} in {cost.start_date} - {cost.end_date}, skipping."
-                )
-            else:
-                raise e
+        con.execute(
+            query="""
+            MERGE INTO costs_per_account c
+            USING VALUES ({account_uuid}, {start_date}, {end_date}, {amount}) AS t(account_uuid, start_date, end_date, amount)
+            ON t.account_uuid = c.account_uuid AND t.start_date = c.start_date AND t.end_date = c.end_date
+            WHEN MATCHED THEN
+                UPDATE SET amount = {amount}
+            WHEN NOT MATCHED THEN
+                INSERT (account_uuid, start_date, end_date, amount)
+                VALUES ({account_uuid}, {start_date}, {end_date}, {amount})
+            """,
+            query_params={
+                "account_uuid": cost.account_uuid,
+                "start_date": cost.start_date,
+                "end_date": cost.end_date,
+                "amount": cost.amount,
+            },
+        )
 
 
 if __name__ == "__main__":
