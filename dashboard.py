@@ -54,7 +54,7 @@ def convert_row_to_dict(row):
     else:
         dict["account"] = dict["account_uuid"]
     return dict
-
+    
 
 # Helper function to get the last 12 months
 def get_last_12_months():
