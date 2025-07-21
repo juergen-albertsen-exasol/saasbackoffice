@@ -38,13 +38,13 @@ def with_connection(callback):
         if connection:
             connection.close()
 
-def query(query):
+
+def query(query, query_params=None):
     def execute_query(connection):
-        result = connection.execute(query)
+        result = connection.execute(query = query, query_params=query_params)
         return [row for row in result]
 
     return with_connection(execute_query)
-
 
 
 def cost_data_to_hierarchy(cost_data):
@@ -98,7 +98,7 @@ def cost_data_to_hierarchy(cost_data):
 
 def plot_cost_treemap(cost_data, title, filename):
     total_cost = sum(list(d.values())[0] for d in cost_data)
-    title = f"{title} - Total Costs: ${total_cost:,.0f}"
+    title = f"{title}: ${total_cost:,.0f}"
     cost_hierarchy = cost_data_to_hierarchy(cost_data)
     import pandas as pd
     import plotly.express as px
@@ -114,7 +114,7 @@ def plot_cost_treemap(cost_data, title, filename):
                 # Only add parent categories to path, leaf node as label
                 row = (
                     (path or [])
-                    + [f"{key} ({value['category_percentage']}%)"]
+                    + [f"{key}<br>({value['category_percentage']}%)"]
                     + [value["total_percentage"]]
                 )
                 data.append(row)
@@ -131,8 +131,12 @@ def plot_cost_treemap(cost_data, title, filename):
 
     df = pd.DataFrame(data, columns=columns)
     fig = px.treemap(df, path=cat_columns + ["Label"], values="Percentage", title=title)
-    fig.update_layout(height=600, width=1300)
-    fig.update_layout(title_font=dict(size=10))
+    fig.update_layout(
+        height=800,
+        width=1600,
+        margin=dict(l=10, r=10, t=60, b=10),  # smaller margins
+        title_font=dict(size=18)
+    )
     fig.write_image(filename, scale=2)
 
 
@@ -188,7 +192,12 @@ class CostFetcher:
         filters = {
             "And": [
                 {"Tags": {"Key": ATTRIBUTION_TAG_KEY, "Values": [self.account_uuid]}},
-                {"Dimensions": {"Key": "RECORD_TYPE", "Values": ["Usage", "SavingsPlanCoveredUsage"]}},
+                {
+                    "Dimensions": {
+                        "Key": "RECORD_TYPE",
+                        "Values": ["Usage", "SavingsPlanCoveredUsage"],
+                    }
+                },
                 {"Dimensions": {"Key": "LINKED_ACCOUNT", "Values": linked_accounts}},
             ]
         }
@@ -309,57 +318,161 @@ class CostFetcher:
         return [value["Value"] for value in values]
 
 
-def create_cost_report(customer_name, status, account_uuid, start_date, end_date):
-    if not customer_name:
-        customer_name = "UNKNOWN"
+class Costs(dict):
+    def __init__(self, company, status, account_uuid, start_date, end_date):
+        super().__init__()
+        self.company = company if company else "UNKNOWN"
+        self.status = status
+        self.account_uuid = account_uuid
+        self.start_date = start_date
+        self.end_date = end_date
+
+    def __getitem__(self, key):
+        return super().__getitem__(key)
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+
+    def __repr__(self):
+        return f"Costs(company={self.company}, status={self.status}, account_uuid={self.account_uuid}, start_date={start_date}, end_date={end_date}, costs={dict(self)})"
+
+
+def get_account_costs(company, status, account_uuid, start_date, end_date):
+    costs = Costs(company, status, account_uuid, start_date, end_date)
     fetcher = CostFetcher(start_date, end_date, account_uuid)
     total_costs = fetcher.get_total_costs()
     if total_costs == 0:
-        print(f"No costs found for {customer_name} ({account_uuid}) from {start_date} to {end_date}.")
-        return
-    traffic_costs = fetcher.get_traffic_costs()
-    ebs_costs = fetcher.get_ebs_costs()
-    ec2_costs = fetcher.get_ec2_costs()
-    access_node_costs = fetcher.get_access_node_costs()
-    s3_storage_costs = fetcher.get_s3_storage_costs()
-    s3_storage_api_request_costs = fetcher.get_s3_storage_api_request_costs()
-    offline_backups_s3_storage_costs = fetcher.get_offline_backups_s3_storage_costs()
-    offline_backups_s3_api_requests_costs = fetcher.get_offline_backups_s3_api_requests_costs()
-    vpc_costs = fetcher.get_vpc_costs()
-    
+        print(
+            f"No costs found for {company} ({account_uuid}) from {start_date} to {end_date}."
+        )
+        return None
 
-    cost_data = [
-        {("Customer Costs", "EBS"): ebs_costs},
-        {("Customer Costs", "Access Node"): access_node_costs},
-        {("Customer Costs", "EC2"): ec2_costs},
-        {("Customer Costs", "DB S3 Storage"): s3_storage_costs},
-        {("Customer Costs", "Traffic"): traffic_costs},
-        {("Customer Costs", "DB S3 Storage API Requests"): s3_storage_api_request_costs},
-        {("Customer Costs", "Offline Backup S3 Storage"): offline_backups_s3_storage_costs},
-        {("Customer Costs", "Offline Backup S3 API Request"): offline_backups_s3_api_requests_costs},
-        {("Customer Costs", "VPC"): vpc_costs}
-    ]
+    costs["EBS"] = fetcher.get_ebs_costs()
+    costs["Access Node"] = fetcher.get_access_node_costs()
+    costs["EC2"] = fetcher.get_ec2_costs()
+    costs["DB S3 Stroage"] = fetcher.get_s3_storage_costs()
+    costs["Traffic"] = fetcher.get_traffic_costs()
+    costs["DB S3 Storage API Requests"] = fetcher.get_s3_storage_api_request_costs()
+    costs["Offline Backup S3 Storage"] = fetcher.get_offline_backups_s3_storage_costs()
+    costs["Offline Backup S3 API Request"] = (
+        fetcher.get_offline_backups_s3_api_requests_costs()
+    )
+    costs["VPC"] = fetcher.get_vpc_costs()
+    total_attributed_costs = sum(costs.values())
+    costs["Other"] = round(total_costs - total_attributed_costs, 2)
+    return costs
 
-    total_attributed_costs = sum(list(d.values())[0] for d in cost_data)
-    other_costs = round(total_costs - total_attributed_costs, 2)
-    cost_data.append({("Customer Costs", "Other"): other_costs})
-    costomer_name_sanitized = customer_name.replace(" ", "_").replace("/", "_")
 
+def create_cost_treemap(costs):
+    cost_data = []
+    for key, value in costs.items():
+        cost_data.append({(key,): value})
+
+    costomer_name_sanitized = costs.company.replace(" ", "_").replace("/", "_")
     plot_cost_treemap(
         cost_data,
-        f"{customer_name} {status} {account_uuid} {start_date} - {end_date}",
-        f"./treemaps/{costomer_name_sanitized} {account_uuid} {start_date}-{end_date}.png",
+        f"{costs.company} ({costs.status})<br>{costs.start_date} - {costs.end_date}",
+        f"./treemaps/{costomer_name_sanitized} {costs.account_uuid} {costs.start_date}-{costs.end_date}.png",
     )
+    return costs
+
+
+def save_cost_reports(all_costs):
+    def save_costs_to_db(con):
+        for costs in all_costs:
+            print(
+                f"Saving costs to DB for {costs.company} ({costs.account_uuid}) from {costs.start_date} to {costs.end_date}:"
+            )
+            for key, value in costs.items():
+                con.execute(
+                    query="""
+                        MERGE INTO aws_cost_report c
+                        USING VALUES ({company}, {account_uuid}, {cost_category}, {start_date}, {end_date}, {cost}, {status}) AS t(compamy, account_uuid, cost_category, start_date, end_date, cost, status)
+                        ON t.account_uuid = c.account_uuid AND t.start_date = c.start_date AND t.end_date = c.end_date AND t.cost_category = c.cost_category
+                        WHEN MATCHED THEN
+                            UPDATE SET cost = {cost}, company = {company}, status = {status}
+                        WHEN NOT MATCHED THEN
+                            INSERT (company, account_uuid, cost_category, start_date, end_date, cost, status)
+                            VALUES ({company}, {account_uuid}, {cost_category}, {start_date}, {end_date}, {cost}, {status})
+                        """,
+                    query_params={
+                        "company": costs.company,
+                        "account_uuid": costs.account_uuid,
+                        "start_date": costs.start_date,
+                        "end_date": costs.end_date,
+                        "cost_category": key,
+                        "cost": value,
+                        "status": costs.status,
+                    },
+                ),
+
+    with_connection(save_costs_to_db)
+
+
+def get_costs_from_db(start_date, end_date):
+    result = query(
+        """
+            SELECT company, status, account_uuid, cost_category, start_date, end_date, cost
+            FROM aws_cost_report
+            WHERE start_date >= {start_date} AND end_date <= {end_date}
+            ORDER BY account_uuid, start_date, end_date, cost_category
+            """,
+            query_params={
+                "start_date": start_date,        
+                "end_date": end_date,
+            }
+    )
+    rows = [row for row in result]
+    costs_dict = {}
+    for row in rows:
+        company, status, account_uuid, cost_category, s_date, e_date, cost = row
+        key = (account_uuid, s_date, e_date)
+        if key not in costs_dict:
+            s_date = s_date.split()[0]
+            e_date = e_date.split()[0]
+            costs_dict[key] = Costs(company, status, account_uuid, s_date, e_date)
+        costs_dict[key][cost_category] = float(cost)
+    return list(costs_dict.values())
+
+def get_all_account_costs(start_date, end_date):
+    customers = query(
+        """
+        SELECT DISTINCT account_uuid, company, status 
+        FROM consumption_report 
+        WHERE status IN ('active', 'in_trial')
+    """
+    )
+    all_costs = []
+    for customer in customers:
+        account_uuid = customer[0]
+        company = customer[1]
+        status = customer[2]
+        print(
+            f"Getting costs for {company} ({account_uuid}) from {start_date} to {end_date}:"
+        )
+        costs = get_account_costs(company, status, account_uuid, start_date, end_date)
+        if costs:
+            all_costs.append(costs)
+    return all_costs
+
+
+def create_cost_treemaps(start_date, end_date):
+    all_costs = get_costs_from_db(start_date, end_date)
+    for costs in all_costs:
+        print(
+            f"Creating Treemap for {costs.company} ({costs.account_uuid}) from {costs.start_date} to {costs.end_date}:"
+        )
+        create_cost_treemap(costs)
+
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        print(
-            f"Usage: {sys.argv[0]} <start_date:YYYY-MM-DD> <end_date:YYYY-MM-DD>"
-        )
+    if len(sys.argv) < 3:
+        print(f"Usage: {sys.argv[0]} <start_date:YYYY-MM-DD> <end_date:YYYY-MM-DD> [--getcosts]")
         sys.exit(1)
-    start_date = sys.argv[2]
-    end_date = sys.argv[3]
+    start_date = sys.argv[1]
+    end_date = sys.argv[2]
+    get_costs_flag = len(sys.argv) > 3 and sys.argv[3] == "--getcosts"
 
     # Validate date format
     try:
@@ -368,14 +481,11 @@ if __name__ == "__main__":
     except ValueError:
         print("Dates must be in YYYY-MM-DD format.")
         sys.exit(1)
-    customers = query("SELECT DISTINCT account_uuid, company, status FROM consumption_report WHERE status IN ('active', 'in_trial')")
-    for customer in customers:
-        account_uuid = customer[0]
-        company = customer[1]
-        status = customer[2]
-        print(f"Creating treemap for {company} ({account_uuid}, {status}) from {start_date} to {end_date}")
-        create_cost_report(company, status, account_uuid, start_date, end_date)
-    print("Treemaps created successfully.")
 
-    
-    
+    if get_costs_flag:
+        print("Getting costs from AWS...")
+        all_costs = get_all_account_costs(start_date, end_date)
+        save_cost_reports(all_costs)
+    else:
+        print("Creating cost treemaps from existing costs in DB...")
+    create_cost_treemaps(start_date, end_date)
