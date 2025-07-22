@@ -438,8 +438,7 @@ def get_all_account_costs(start_date, end_date):
     customers = query(
         """
         SELECT DISTINCT account_uuid, company, status 
-        FROM consumption_report 
-        WHERE status IN ('active', 'in_trial')
+        FROM consumption_report
     """
     )
     all_costs = []
@@ -467,12 +466,20 @@ def create_cost_treemaps(start_date, end_date):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print(f"Usage: {sys.argv[0]} <start_date:YYYY-MM-DD> <end_date:YYYY-MM-DD> [--getcosts]")
+    args = sys.argv[1:]
+    get_costs_flag = False
+
+    # Check if --getcosts is present anywhere in the args
+    if "--getcosts" in args:
+        get_costs_flag = True
+        args.remove("--getcosts")
+
+    if len(args) < 2:
+        print(f"Usage: {sys.argv[0]} [--getcosts] <start_date:YYYY-MM-DD> <end_date:YYYY-MM-DD>")
         sys.exit(1)
-    start_date = sys.argv[1]
-    end_date = sys.argv[2]
-    get_costs_flag = len(sys.argv) > 3 and sys.argv[3] == "--getcosts"
+
+    start_date = args[0]
+    end_date = args[1]
 
     # Validate date format
     try:
@@ -483,7 +490,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     if get_costs_flag:
-        print("Getting costs from AWS...")
+        print("Getting costs from AWS and creating cost treemaps...")
         all_costs = get_all_account_costs(start_date, end_date)
         save_cost_reports(all_costs)
     else:
