@@ -334,10 +334,10 @@ class Costs(dict):
         super().__setitem__(key, value)
 
     def __repr__(self):
-        return f"Costs(company={self.company}, status={self.status}, account_uuid={self.account_uuid}, start_date={start_date}, end_date={end_date}, costs={dict(self)})"
+        return f"Costs(company={self.company}, status={self.status}, account_uuid={self.account_uuid}, start_date={self.start_date}, end_date={self.end_date}, costs={dict(self)})"
 
 
-def get_account_costs(company, status, account_uuid, start_date, end_date):
+def get_company_costs_from_aws(company, status, account_uuid, start_date, end_date):
     costs = Costs(company, status, account_uuid, start_date, end_date)
     fetcher = CostFetcher(start_date, end_date, account_uuid)
     total_costs = fetcher.get_total_costs()
@@ -377,7 +377,7 @@ def create_cost_treemap(costs):
     return costs
 
 
-def save_cost_reports(all_costs):
+def save_cost_reports_to_db(all_costs):
     def save_costs_to_db(con):
         for costs in all_costs:
             print(
@@ -387,22 +387,21 @@ def save_cost_reports(all_costs):
                 con.execute(
                     query="""
                         MERGE INTO aws_cost_report c
-                        USING VALUES ({company}, {account_uuid}, {cost_category}, {start_date}, {end_date}, {cost}, {status}) AS t(compamy, account_uuid, cost_category, start_date, end_date, cost, status)
-                        ON t.account_uuid = c.account_uuid AND t.start_date = c.start_date AND t.end_date = c.end_date AND t.cost_category = c.cost_category
+                        USING VALUES ({account_uuid}, {company}, {start_date}, {cost_category}, {cost}, {status}) AS t(account_uuid, company, start_date, cost_category, cost, status)
+                        ON t.account_uuid = c.account_uuid AND t.start_date = c.start_date AND t.cost_category = c.cost_category
                         WHEN MATCHED THEN
                             UPDATE SET cost = {cost}, company = {company}, status = {status}
                         WHEN NOT MATCHED THEN
-                            INSERT (company, account_uuid, cost_category, start_date, end_date, cost, status)
-                            VALUES ({company}, {account_uuid}, {cost_category}, {start_date}, {end_date}, {cost}, {status})
-                        """,
+                            INSERT (account_uuid, company, start_date, cost_category, cost, status)
+                            VALUES ({account_uuid}, {company}, {start_date}, {cost_category}, {cost}, {status})
+                    """,
                     query_params={
-                        "company": costs.company,
-                        "account_uuid": costs.account_uuid,
-                        "start_date": costs.start_date,
-                        "end_date": costs.end_date,
+                        "account_uuid": costs['account_uuid'],
+                        "company": costs['company'],
+                        "start_date": costs['start_date'],
                         "cost_category": key,
                         "cost": value,
-                        "status": costs.status,
+                        "status": costs['status'],
                     },
                 ),
 
@@ -414,7 +413,7 @@ def get_costs_from_db(start_date, end_date):
         """
             SELECT company, status, account_uuid, cost_category, start_date, end_date, cost
             FROM aws_cost_report
-            WHERE start_date >= {start_date} AND end_date <= {end_date}
+            WHERE start_date = {start_date} AND end_date = {end_date}
             ORDER BY account_uuid, start_date, end_date, cost_category
             """,
             query_params={
@@ -449,7 +448,7 @@ def get_all_account_costs(start_date, end_date):
         print(
             f"Getting costs for {company} ({account_uuid}) from {start_date} to {end_date}:"
         )
-        costs = get_account_costs(company, status, account_uuid, start_date, end_date)
+        costs = get_company_costs_from_aws(company, status, account_uuid, start_date, end_date)
         if costs:
             all_costs.append(costs)
     return all_costs
@@ -465,34 +464,147 @@ def create_cost_treemaps(start_date, end_date):
 
 
 
+def save_costs_to_db(all_costs, con):
+    for costs in all_costs:
+        print(f"Saving costs to DB for {costs['company']} ({costs['account_uuid']}) for {costs['year']}-{costs['month']}:")
+        for category, value in costs['categories'].items():
+            con.execute(
+                query="""
+                    MERGE INTO aws_cost_report c
+                    USING VALUES ({account_uuid}, {company}, {start_date}, {cost_category}, {cost}, {status}) AS t(account_uuid, company, start_date, cost_category, cost, status)
+                    ON t.account_uuid = c.account_uuid AND t.start_date = c.start_date AND t.cost_category = c.cost_category
+                    WHEN MATCHED THEN
+                        UPDATE SET cost = {cost}, company = {company}, status = {status}
+                    WHEN NOT MATCHED THEN
+                        INSERT (account_uuid, company, start_date, cost_category, cost, status)
+                        VALUES ({account_uuid}, {company}, {start_date}, {cost_category}, {cost}, {status})
+                """,
+                query_params={
+                    "account_uuid": costs['account_uuid'],
+                    "company": costs['company'],
+                    "start_date": costs['start_date'],
+                    "cost_category": category,
+                    "cost": value,
+                    "status": costs['status'],
+                },
+            )
+        
+
+
+def get_costs_for_months_from_aws(months, con):
+    for month in months:
+        year, month = map(int, month.split('-'))
+        start_date = f"{year}-{month:02d}-01"
+        if month == 12:
+            end_date = f"{year + 1}-01-01"
+        else:
+            end_date = f"{year}-{month + 1:02d}-01"
+        
+        # Fetch all customers
+        customers = con.execute("""
+            SELECT DISTINCT account_uuid, company, status 
+            FROM consumption_report
+        """)
+        
+        for customer in customers:
+            account_uuid, company, status = customer
+            print(f"Getting costs for {company} ({account_uuid}) for {year}-{month:02d}:")
+            
+            # Fetch costs for the current company
+            fetcher = CostFetcher(start_date, end_date, account_uuid)
+            total_costs = fetcher.get_total_costs()
+            if total_costs == 0:
+                print(f"No costs found for {company} ({account_uuid}) for {year}-{month:02d}.")
+                continue
+
+            # Prepare cost data
+            costs = {
+                "account_uuid": account_uuid,
+                "company": company,
+                "month": month,
+                "year": year,
+                "status": status,
+                "categories": {
+                    "EBS": fetcher.get_ebs_costs(),
+                    "Access Node": fetcher.get_access_node_costs(),
+                    "EC2": fetcher.get_ec2_costs(),
+                    "DB S3 Storage": fetcher.get_s3_storage_costs(),
+                    "Traffic": fetcher.get_traffic_costs(),
+                    "DB S3 Storage API Requests": fetcher.get_s3_storage_api_request_costs(),
+                    "Offline Backup S3 Storage": fetcher.get_offline_backups_s3_storage_costs(),
+                    "Offline Backup S3 API Request": fetcher.get_offline_backups_s3_api_requests_costs(),
+                    "VPC": fetcher.get_vpc_costs(),
+                },
+            }
+            total_attributed_costs = sum(costs['categories'].values())
+            costs['categories']["Other"] = round(total_costs - total_attributed_costs, 2)
+            save_costs_to_db([costs], con)
+
+
+def create_cost_treemaps_for_month(month, account_uuids=None):
+    year, month = map(int, month.split('-'))
+    start_date = f"{year}-{month:02d}-01"
+    query_str = """
+        SELECT company, account_uuid, cost_category, cost, status
+        FROM aws_cost_report
+        WHERE start_date = {start_date}
+    """
+    query_params = {"start_date": start_date}
+
+    if account_uuids:
+        query_str += " AND account_uuid IN ({account_uuids})"
+        query_params["account_uuids"] = account_uuids
+
+    result = query(query_str, query_params=query_params)
+
+    costs_by_company = {}
+    for row in result:
+        company = row[0]
+        account_uuid = row[1]
+        category = row[2]
+        cost = float(row[3])
+        status = row[4]
+        if company not in costs_by_company:
+            costs_by_company[company] = {
+                "account_uuid": account_uuid,
+                "status": status,
+                "categories": {},
+            }
+        costs_by_company[company]['categories'][category] = cost
+
+    for company, data in costs_by_company.items():
+        print(f"Creating Treemap for {company} ({data['account_uuid']}) for {start_date}:")
+        cost_data = [{(category,): value} for category, value in data['categories'].items()]
+        sanitized_name = company.replace(" ", "_").replace("/", "_")
+        plot_cost_treemap(
+            cost_data,
+            f"{company} ({data['status']})<br>{start_date}",
+            f"./treemaps/{sanitized_name} {data['account_uuid']} {start_date}.png",
+        )
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
-    get_costs_flag = False
-
-    # Check if --getcosts is present anywhere in the args
-    if "--getcosts" in args:
-        get_costs_flag = True
-        args.remove("--getcosts")
 
     if len(args) < 2:
-        print(f"Usage: {sys.argv[0]} [--getcosts] <start_date:YYYY-MM-DD> <end_date:YYYY-MM-DD>")
+        print(f"Usage: {sys.argv[0]} <command> <args>")
         sys.exit(1)
 
-    start_date = args[0]
-    end_date = args[1]
-
-    # Validate date format
-    try:
-        datetime.strptime(start_date, "%Y-%m-%d")
-        datetime.strptime(end_date, "%Y-%m-%d")
-    except ValueError:
-        print("Dates must be in YYYY-MM-DD format.")
-        sys.exit(1)
-
-    if get_costs_flag:
-        print("Getting costs from AWS and creating cost treemaps...")
-        all_costs = get_all_account_costs(start_date, end_date)
-        save_cost_reports(all_costs)
-    else:
+    command = args[0]
+    if command == "getcosts":
+        months = args[1:]
+        print("Getting costs from AWS and saving to DB...")
+        def proceess_costs(con):
+            get_costs_for_months_from_aws(months, con)
+        with_connection(proceess_costs)
+    elif command == "createtreemaps":
+        if len(args) < 2:
+            print("Usage: createtreemaps <month:YYYY-MM> [account_uuid1 account_uuid2 ...]")
+            sys.exit(1)
+        month = args[1]
+        account_uuids = args[2:] if len(args) > 2 else None
         print("Creating cost treemaps from existing costs in DB...")
-    create_cost_treemaps(start_date, end_date)
+        create_cost_treemaps_for_month(month, account_uuids)
+    else:
+        print(f"Unknown command: {command}")
+        sys.exit(1)
