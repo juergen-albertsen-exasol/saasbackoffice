@@ -7,6 +7,7 @@ from configparser import ConfigParser
 import os
 import sys
 from pprint import pprint
+import argparse
 
 
 config = ConfigParser()
@@ -541,7 +542,7 @@ def get_costs_for_months_from_aws(months, con):
             save_costs_to_db([costs], con)
 
 
-def create_cost_treemaps_for_month(month, account_uuids=None):
+def create_company_cost_treemaps_for_month(month, account_uuids=None):
     year, month = map(int, month.split('-'))
     start_date = f"{year}-{month:02d}-01"
     query_str = """
@@ -583,28 +584,70 @@ def create_cost_treemaps_for_month(month, account_uuids=None):
         )
 
 
+def create_summary_treemap_for_months(start_date, end_date, account_uuids=[], title="summary_treemap"):
+    query_str = """
+        SELECT SUM(cost) AS cost, cost_category
+        FROM aws_cost_report
+        WHERE start_date >= {start_date} AND start_date < {end_date}
+    """
+    query_params = {"start_date": start_date, "end_date": end_date}
+
+    if account_uuids:
+        query_str += " AND account_uuid IN ({account_uuids})"
+        query_params["account_uuids"] = account_uuids
+
+    query_str += " GROUP BY cost_category"
+
+    result = query(query_str, query_params=query_params)
+
+    cost_data = []
+    for row in result:
+        cost = float(row[0])
+        category = row[1]
+        cost_data.append({(category,): cost})
+
+    print(f"Creating Summary Treemap for {start_date} to {end_date}:")
+    plot_cost_treemap(
+        cost_data,
+        f"{title}<br>{start_date} to {end_date}",
+        f"./treemaps/{title}_{start_date}_to_{end_date}.png",
+    )
+
+
 if __name__ == "__main__":
-    args = sys.argv[1:]
+    parser = argparse.ArgumentParser(description="Cost Report Management")
+    subparsers = parser.add_subparsers(dest="command", required=True)
 
-    if len(args) < 2:
-        print(f"Usage: {sys.argv[0]} <command> <args>")
-        sys.exit(1)
+    # Subparser for the "get-costs" command
+    getcosts_parser = subparsers.add_parser("get-costs", help="Fetch costs from AWS and save to DB")
+    getcosts_parser.add_argument("months", nargs="+", help="List of months in YYYY-MM format")
 
-    command = args[0]
-    if command == "getcosts":
-        months = args[1:]
+    # Subparser for the "create-company-treemaps" command
+    company_treemap_parser = subparsers.add_parser("create-company-treemaps", help="Create company-specific cost treemaps")
+    company_treemap_parser.add_argument("month", help="Month in YYYY-MM format")
+    company_treemap_parser.add_argument("--account-uuids", type=lambda s: s.split(','), help="Optional comma-separated list of account UUIDs")
+
+    # Subparser for the "create-summary-treemap" command
+    summary_treemap_parser = subparsers.add_parser("create-summary-treemap", help="Create a summary treemap")
+    summary_treemap_parser.add_argument("start_date", help="Start date in YYYY-MM-DD format")
+    summary_treemap_parser.add_argument("end_date", nargs="?", help="Optional end date in YYYY-MM-DD format")
+    summary_treemap_parser.add_argument("--account-uuids", type=lambda s: s.split(','), help="Optional comma-separated list of account UUIDs")
+
+    args = parser.parse_args()
+
+    if args.command == "get-costs":
         print("Getting costs from AWS and saving to DB...")
-        def proceess_costs(con):
-            get_costs_for_months_from_aws(months, con)
-        with_connection(proceess_costs)
-    elif command == "createtreemaps":
-        if len(args) < 2:
-            print("Usage: createtreemaps <month:YYYY-MM> [account_uuid1 account_uuid2 ...]")
-            sys.exit(1)
-        month = args[1]
-        account_uuids = args[2:] if len(args) > 2 else None
+        def process_costs(con):
+            get_costs_for_months_from_aws(args.months, con)
+        with_connection(process_costs)
+
+    elif args.command == "create-company-treemaps":
         print("Creating cost treemaps from existing costs in DB...")
-        create_cost_treemaps_for_month(month, account_uuids)
+        create_company_cost_treemaps_for_month(args.month, args.account_uuids)
+
+    elif args.command == "create-summary-treemap":
+        print(f"Creating summary treemap for start_date={args.start_date}, end_date={args.end_date}, account_uuids={args.account_uuids}...")
+        create_summary_treemap_for_months(args.start_date, args.end_date, args.account_uuids)   
     else:
-        print(f"Unknown command: {command}")
+        print(f"Unknown command: {args.command}")
         sys.exit(1)
