@@ -467,7 +467,7 @@ def create_cost_treemaps(start_date, end_date):
 
 def save_costs_to_db(all_costs, con):
     for costs in all_costs:
-        print(f"Saving costs to DB for {costs['company']} ({costs['account_uuid']}) for {costs['year']}-{costs['month']}:")
+        print(f"Saving costs to DB for {costs['company']} ({costs['account_uuid']}) for {costs['start_date']}:")
         for category, value in costs['categories'].items():
             con.execute(
                 query="""
@@ -492,7 +492,7 @@ def save_costs_to_db(all_costs, con):
         
 
 
-def get_costs_for_months_from_aws(months, con):
+def get_costs_from_aws_and_save_to_db(months, con, account_uuids=[]):
     for month in months:
         year, month = map(int, month.split('-'))
         start_date = f"{year}-{month:02d}-01"
@@ -500,17 +500,23 @@ def get_costs_for_months_from_aws(months, con):
             end_date = f"{year + 1}-01-01"
         else:
             end_date = f"{year}-{month + 1:02d}-01"
-        
-        # Fetch all customers
-        customers = con.execute("""
-            SELECT DISTINCT account_uuid, company, status 
-            FROM consumption_report
-        """)
-        
+
+        query_str = """
+            SELECT account_uuid, company, status 
+            FROM customers
+        """
+        query_params = {}
+
+        if account_uuids:
+            query_str += " WHERE account_uuid IN ({account_uuids})"
+            query_params["account_uuids"] = account_uuids
+
+        customers = con.execute(query_str, query_params=query_params)
+
         for customer in customers:
             account_uuid, company, status = customer
             print(f"Getting costs for {company} ({account_uuid}) for {year}-{month:02d}:")
-            
+
             # Fetch costs for the current company
             fetcher = CostFetcher(start_date, end_date, account_uuid)
             total_costs = fetcher.get_total_costs()
@@ -522,8 +528,7 @@ def get_costs_for_months_from_aws(months, con):
             costs = {
                 "account_uuid": account_uuid,
                 "company": company,
-                "month": month,
-                "year": year,
+                "start_date": start_date,
                 "status": status,
                 "categories": {
                     "EBS": fetcher.get_ebs_costs(),
@@ -621,6 +626,7 @@ if __name__ == "__main__":
     # Subparser for the "get-costs" command
     getcosts_parser = subparsers.add_parser("get-costs", help="Fetch costs from AWS and save to DB")
     getcosts_parser.add_argument("months", nargs="+", help="List of months in YYYY-MM format")
+    getcosts_parser.add_argument("--account-uuids", type=lambda s: s.split(','), help="Optional comma-separated list of account UUIDs")
 
     # Subparser for the "create-company-treemaps" command
     company_treemap_parser = subparsers.add_parser("create-company-treemaps", help="Create company-specific cost treemaps")
@@ -636,9 +642,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.command == "get-costs":
-        print("Getting costs from AWS and saving to DB...")
+        print(f"Getting costs from AWS and saving to DB for months={args.months}, account_uuids={args.account_uuids}...")
         def process_costs(con):
-            get_costs_for_months_from_aws(args.months, con)
+            get_costs_from_aws_and_save_to_db(args.months, con, args.account_uuids)
         with_connection(process_costs)
 
     elif args.command == "create-company-treemaps":
