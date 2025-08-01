@@ -369,6 +369,8 @@ def create_cost_treemap(costs):
     for key, value in costs.items():
         cost_data.append({(key,): value})
 
+    if not costs.company:
+        costs.company = "UNKNOWN"
     costomer_name_sanitized = costs.company.replace(" ", "_").replace("/", "_")
     plot_cost_treemap(
         cost_data,
@@ -581,6 +583,8 @@ def create_company_cost_treemaps_for_month(month, account_uuids=None):
     for company, data in costs_by_company.items():
         print(f"Creating Treemap for {company} ({data['account_uuid']}) for {start_date}:")
         cost_data = [{(category,): value} for category, value in data['categories'].items()]
+        if not company:
+            company = "UNKNOWN"
         sanitized_name = company.replace(" ", "_").replace("/", "_")
         plot_cost_treemap(
             cost_data,
@@ -611,11 +615,35 @@ def create_summary_treemap_for_months(start_date, end_date, account_uuids=[], ti
         category = row[1]
         cost_data.append({(category,): cost})
 
-    print(f"Creating Summary Treemap for {start_date} to {end_date}:")
+    file_name = f"./treemaps/{title}_{start_date}_to_{end_date}.png"
+    print(f"Creating Summary Treemap for {start_date} to {end_date} at {file_name}:")
+
     plot_cost_treemap(
         cost_data,
         f"{title}<br>{start_date} to {end_date}",
-        f"./treemaps/{title}_{start_date}_to_{end_date}.png",
+        file_name,
+    )
+
+
+def create_summary_treemap_from_sql(sql_script, start_date, end_date, title="summary_treemap"):
+    with open(sql_script, 'r') as file:
+        sql_query = file.read()
+
+    query_params = {"start_date": start_date, "end_date": end_date}
+    result = query(sql_query, query_params=query_params)
+
+    cost_data = []
+    for row in result:
+        cost = float(row[0])
+        category = row[1]
+        cost_data.append({(category,): cost})
+
+    file_name = f"./treemaps/{title}_{start_date}_to_{end_date}.png"
+    print(f"Creating Summary Treemap from SQL script ({sql_script}) at {file_name}:")
+    plot_cost_treemap(
+        cost_data,
+        title,
+        file_name,
     )
 
 
@@ -637,7 +665,11 @@ if __name__ == "__main__":
     summary_treemap_parser = subparsers.add_parser("create-summary-treemap", help="Create a summary treemap")
     summary_treemap_parser.add_argument("start_date", help="Start date in YYYY-MM-DD format")
     summary_treemap_parser.add_argument("end_date", nargs="?", help="Optional end date in YYYY-MM-DD format")
-    summary_treemap_parser.add_argument("--account-uuids", type=lambda s: s.split(','), help="Optional comma-separated list of account UUIDs")
+    
+    group = summary_treemap_parser.add_mutually_exclusive_group()
+    group.add_argument("--account-uuids", type=lambda s: s.split(','), help="Optional comma-separated list of account UUIDs")
+    group.add_argument("--sql-script", help="Path to an SQL script file to execute")
+    summary_treemap_parser.add_argument("--title", help="Optional title for the treemap")
 
     args = parser.parse_args()
 
@@ -652,8 +684,12 @@ if __name__ == "__main__":
         create_company_cost_treemaps_for_month(args.month, args.account_uuids)
 
     elif args.command == "create-summary-treemap":
-        print(f"Creating summary treemap for start_date={args.start_date}, end_date={args.end_date}, account_uuids={args.account_uuids}...")
-        create_summary_treemap_for_months(args.start_date, args.end_date, args.account_uuids)   
+        print(f"Creating summary treemap for start_date={args.start_date}, end_date={args.end_date}, account_uuids={args.account_uuids}, sql_script={args.sql_script}, title={args.title}...")
+        if args.sql_script:
+            create_summary_treemap_from_sql(args.sql_script, args.start_date, args.end_date, args.title)
+        else:
+            create_summary_treemap_for_months(args.start_date, args.end_date, args.account_uuids, args.title)
     else:
         print(f"Unknown command: {args.command}")
         sys.exit(1)
+    
