@@ -1,3 +1,4 @@
 .exasolrc
 treemaps
 .DS_Store
+*.new
