@@ -151,39 +151,8 @@ class CostFetcher:
         self.client = self._get_aws_client()
 
     def _get_aws_client(self):
-        aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
-        aws_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-        aws_session_token = os.getenv("AWS_SESSION_TOKEN")
-        aws_region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
-
-        if not aws_access_key or not aws_secret_key:
-            credentials_path = os.path.expanduser("~/.aws/credentials")
-            if os.path.exists(credentials_path):
-                config = ConfigParser()
-                config.read(credentials_path)
-                aws_access_key = config.get(
-                    AWS_PROFILE, "aws_access_key_id", fallback=None
-                )
-                aws_secret_key = config.get(
-                    AWS_PROFILE, "aws_secret_access_key", fallback=None
-                )
-                aws_session_token = config.get(
-                    AWS_PROFILE, "aws_session_token", fallback=None
-                )
-                aws_region = config.get(AWS_PROFILE, "region", fallback=aws_region)
-
-        if not aws_access_key or not aws_secret_key:
-            raise EnvironmentError(
-                "AWS credentials not set in environment variables or ~/.aws/credentials file."
-            )
-
-        return boto3.client(
-            "ce",
-            aws_access_key_id=aws_access_key,
-            aws_secret_access_key=aws_secret_key,
-            aws_session_token=aws_session_token,
-            region_name=aws_region,
-        )
+        session = boto3.Session(profile_name="costexplorer")
+        return session.client("ce", region_name="eu-central-1")
 
     def get_cost_and_usage(
         self,
@@ -220,8 +189,7 @@ class CostFetcher:
                 },
             )
         if additional_filters:
-            for filter_item in additional_filters:
-                filters.append(filter_item)
+            filters.extend(additional_filters)
         filters = {"And": filters}
         response = self.client.get_cost_and_usage(
             TimePeriod={"Start": self.start_date, "End": self.end_date},
@@ -321,6 +289,14 @@ class CostFetcher:
 
     def get_prod_saas_costs(self):
         return self.get_cost_and_usage([AWS_PROD_SAAS_ACCOUNT])
+    
+    def get_unattributed_costs(self):
+        return self.get_cost_and_usage(
+            [AWS_PROD_SAAS_CUSTOMERS_ACCOUNT, AWS_PROD_SAAS_OFFLINE_BACKUPS_ACCOUNT],
+            None,
+            None,
+            [{"Tags": {"Key": ATTRIBUTION_TAG_KEY, "MatchOptions": ["ABSENT"]}}]
+        )
 
     def get_dimension_values(self, usage_key):
         response = self.client.get_dimension_values(
@@ -396,7 +372,7 @@ def save_cost_reports_to_db(all_costs):
     def save_costs_to_db(con):
         for costs in all_costs:
             print(
-                f"Saving costs to DB for {costs.company} ({costs.account_uuid}) from {costs.start_date} to {costs.end_date}:"
+                f"Saving costs to DB for {costs.company} ({costs.account_uuid}) from {costs.start_date} to {costs.end_date}."
             )
             for key, value in costs.items():
                 con.execute(
@@ -484,7 +460,7 @@ def create_cost_treemaps(start_date, end_date):
 def save_costs_to_db(all_costs, con):
     for costs in all_costs:
         print(
-            f"Saving costs to DB for {costs['company']} ({costs['account_uuid']}) for {costs['start_date']}:"
+            f"Saving costs to DB for {costs['company']} ({costs['account_uuid']}) for {costs['start_date']}."
         )
         for category, value in costs["categories"].items():
             con.execute(
@@ -509,7 +485,7 @@ def save_costs_to_db(all_costs, con):
             )
 
 
-def get_customer_costs_from_aws_and_save_to_db(months, con, account_uuids=[]):
+def import_customer_costs(months, con, account_uuids=[]):
     for month in months:
         start_date, end_date = get_start_and_end_dates(month)
 
@@ -527,7 +503,7 @@ def get_customer_costs_from_aws_and_save_to_db(months, con, account_uuids=[]):
 
         for customer in customers:
             account_uuid, company, status = customer
-            print(f"Getting costs for {company} ({account_uuid}) for {month}:")
+            print(f"Getting costs for {company} ({account_uuid}) for {month}.")
 
             # Fetch costs for the current company
             fetcher = CostFetcher(start_date, end_date, account_uuid)
@@ -561,17 +537,31 @@ def get_customer_costs_from_aws_and_save_to_db(months, con, account_uuids=[]):
             save_costs_to_db([costs], con)
 
 
-def get_prod_saas_costs_from_aws_and_save_to_db(months, con):
+def import_prod_saas_costs(months, con):
     for month in months:
-        print(f"Getting costs for prod-saas for {month}:")
+        print(f"Getting costs for prod-saas for {month}.")
         start_date, end_date = get_start_and_end_dates(month)
         fetcher = CostFetcher(start_date, end_date)
         costs = {
-            "account_uuid": "prod-saas",
+            "account_uuid": "N/A",
             "company": "Exasol",
             "start_date": start_date,
             "status": "active",
-            "categories": {"Total Costs": fetcher.get_prod_saas_costs()},
+            "categories": {"Global Costs": fetcher.get_prod_saas_costs()},
+        }
+        save_costs_to_db([costs], con)
+
+def import_unattributed_costs(months, con):
+    for month in months:
+        print(f"Getting unattributed costs for {month}.")
+        start_date, end_date = get_start_and_end_dates(month)
+        fetcher = CostFetcher(start_date, end_date)
+        costs = {
+            "account_uuid": "N/A",
+            "company": "UNKNOWN",
+            "start_date": start_date,
+            "status": "active",
+            "categories": {"Unattributed Costs": fetcher.get_unattributed_costs()},
         }
         save_costs_to_db([costs], con)
 
@@ -750,10 +740,9 @@ if __name__ == "__main__":
         )
 
         def process_costs(con):
-            get_customer_costs_from_aws_and_save_to_db(
-                args.months, con, args.account_uuids
-            )
-            get_prod_saas_costs_from_aws_and_save_to_db(args.months, con)
+            import_customer_costs(args.months, con, args.account_uuids)
+            import_prod_saas_costs(args.months, con)
+            import_unattributed_costs(args.months, con)
 
         with_connection(process_costs)
 

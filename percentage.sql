@@ -7,6 +7,7 @@ with
         where
             start_date >= '2025-07-01'
             and start_date < '2025-08-01'
+            and cost_category not in ('Unattributed Costs', 'Global Costs')
     )
 with
     c (cost, category) as (
@@ -19,6 +20,7 @@ with
         where
             r.start_date >= '2025-07-01'
             and r.start_date < '2025-08-01'
+            and cost_category not in ('Unattributed Costs', 'Global Costs')
         group by
             r.cost_category,
             t.total_cost
